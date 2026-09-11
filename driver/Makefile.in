@@ -221,7 +221,7 @@ AUTH_OBJS_1	= dialog.o passwd.o setuid.o \
 		  $(UTILS_BIN)/resources.o \
 		  $(UTILS_BIN)/logo.o \
 		  $(UTILS_BIN)/minixpm.o
-AUTH_LIBS	= $(LIBS_PRE) $(XFT_LIBS) $(XINERAMA_LIBS) \
+AUTH_LIBS	= $(LIBS_PRE) $(XFT_LIBS) -lXrender $(XINERAMA_LIBS) \
 		  $(XDPMS_LIBS) @SAVER_LIBS@ -lXt -lX11 -lXext \
 		  @PASSWD_LIBS@ $(LIBS_POST) $(INTL_LIBS)
 
@@ -1411,3 +1411,6 @@ xscreensaver-systemd.o: $(UTILS_SRC)/queue.h
 xscreensaver-systemd.o: $(UTILS_SRC)/version.h
 xscreensaver-systemd.o: $(UTILS_SRC)/yarandom.h
 
+
+# Local compact authentication theme.
+dialog.o: $(srcdir)/dialog-phosphor.h $(srcdir)/dialog-matrix.h $(srcdir)/dialog-matrix-font.h

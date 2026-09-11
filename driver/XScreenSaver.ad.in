@@ -142,7 +142,7 @@ XScreenSaver.bourneShell:		/bin/sh
 
 ! Resources for theme names are downcased with spaces stripped.
 *themeNames: Default, Borderless, Dark Gray, Borderless Black, \
-             Green Black, White, Blue, Aqua Black, Wine
+             Green Black, White, Blue, Aqua Black, Wine, Phosphor
 
 *Dialog.headingFont:	sans-serif bold 16
 *Dialog.bodyFont:	sans-serif 14
