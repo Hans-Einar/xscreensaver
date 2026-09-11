@@ -35,6 +35,10 @@
 #include <stdlib.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/random.h>
+#include <stdint.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
 #include <pwd.h>
 
 #ifdef HAVE_UNISTD_H
@@ -154,6 +158,16 @@ struct window_state {
   Dimension min_height;
   Window window;
   Colormap cmap;
+  Colormap dialog_cmap;
+  Visual *dialog_visual;
+  int dialog_depth;
+  Bool phosphor_p, argb_p;
+  Pixmap matrix_atlas;
+  Picture matrix_mask;
+  Bool matrix_initialized;
+  unsigned char matrix_symbols[MAX_PASSWD_CHARS];
+  unsigned int matrix_count;
+  uint32_t matrix_rng;
 
   int splash_p;
   auth_state auth_state;
@@ -988,18 +1002,20 @@ create_window (window_state *ws, int w, int h)
   unsigned long attrmask;
   Window ow = ws->window;
 
-  attrmask = CWOverrideRedirect | CWEventMask;
+  attrmask = CWOverrideRedirect | CWEventMask | CWColormap | CWBorderPixel;
+  attrs.colormap = ws->dialog_cmap;
+  attrs.border_pixel = 0;
   attrs.override_redirect = True;
   attrs.event_mask = ExposureMask | VisibilityChangeMask;
   ws->window = XCreateWindow (ws->dpy,
                               RootWindowOfScreen(ws->screen),
                               ws->x, ws->y, w, h, 0,
-                              DefaultDepthOfScreen (ws->screen),
+                              ws->dialog_depth,
                               InputOutput,
-                              DefaultVisualOfScreen(ws->screen),
+                              ws->dialog_visual,
                               attrmask, &attrs);
   XSetWindowBackground (ws->dpy, ws->window, ws->background);
-  XSetWindowColormap (ws->dpy, ws->window, ws->cmap);
+  XSetWindowColormap (ws->dpy, ws->window, ws->dialog_cmap);
   xscreensaver_set_wm_atoms (ws->dpy, ws->window, w, h, 0);
 
   /* An input method is necessary for dead keys to work.
@@ -1046,6 +1062,8 @@ window_init (Widget root_widget, int splash_p)
 
   splash_pick_window_position (ws->dpy, &ws->cx, &ws->cy, &ws->screen);
 
+  ws->dialog_visual = DefaultVisualOfScreen (ws->screen);
+  ws->dialog_depth = DefaultDepthOfScreen (ws->screen);
   ws->cmap = XCreateColormap (dpy,
                               RootWindowOfScreen (ws->screen), /* Old skool */
                               DefaultVisualOfScreen (ws->screen),
@@ -1067,6 +1085,9 @@ window_init (Widget root_widget, int splash_p)
     ws->dialog_theme = strdup ("default");
   if (verbose_p)
     fprintf (stderr, "%s: theme: %s\n", blurb(), ws->dialog_theme);
+
+  ws->phosphor_p = (!splash_p && !debug_p &&
+                    !strcmp (ws->dialog_theme, "phosphor"));
 
   ws->newlogin_cmd = get_str (ws, "newLoginCommand", "NewLoginCommand");
   ws->date_format = get_str (ws, "dateFormat", "DateFormat"); 
@@ -1106,7 +1127,7 @@ window_init (Widget root_widget, int splash_p)
   ws->date_font     = get_font (ws, "dateFont");
   ws->hostname_font = get_font (ws, "unameFont");
 
-  ws->asterisk_utf8 = choose_asterisk (ws);
+  ws->asterisk_utf8 = ws->phosphor_p ? "*" : choose_asterisk (ws);
   
   ws->foreground = get_color (ws, "foreground", "Foreground");
   ws->background = get_color (ws, "background", "Background");
@@ -1183,6 +1204,29 @@ window_init (Widget root_widget, int splash_p)
                   &ws->logo_width, &ws->logo_height, &bw, &d);
   }
 
+  ws->dialog_cmap = ws->cmap;
+  /* Use per-pixel alpha only when a compositor is present. The daemon's
+     opaque covering windows and input grabs are not changed. */
+  if (ws->phosphor_p)
+    {
+      XVisualInfo vi;
+      char selection[64];
+      sprintf (selection, "_NET_WM_CM_S%d", XScreenNumberOfScreen (ws->screen));
+      if (XGetSelectionOwner (dpy, XInternAtom (dpy, selection, False)) != None &&
+          XMatchVisualInfo (dpy, XScreenNumberOfScreen (ws->screen),
+                            32, TrueColor, &vi))
+        {
+          XRenderPictFormat *format = XRenderFindVisualFormat (dpy, vi.visual);
+          if (format && format->type == PictTypeDirect && format->direct.alphaMask)
+            {
+              ws->dialog_visual = vi.visual;
+              ws->dialog_depth = vi.depth;
+              ws->argb_p = True;
+              ws->dialog_cmap = XCreateColormap (dpy, RootWindowOfScreen (ws->screen),
+                                          vi.visual, AllocNone);
+            }
+        }
+    }
   ws->x = ws->y = 0;
   create_window (ws, 1, 1);
 
@@ -1338,11 +1382,18 @@ trim (const char *s)
 }
 
 
+#include "dialog-phosphor.h"
+
 /* Repaint the entire window.
  */
 static void
 window_draw (window_state *ws)
 {
+  if (ws->phosphor_p)
+    {
+      phosphor_window_draw (ws);
+      return;
+    }
   Display *dpy = ws->dpy;
   Screen *screen = ws->screen;
   Window root = RootWindowOfScreen (screen);
@@ -1978,6 +2029,9 @@ destroy_window (window_state *ws)
   if (ws->hostname_label)   free (ws->hostname_label);
   if (ws->kbd_layout_label) free (ws->kbd_layout_label);
 
+  if (ws->matrix_mask) XRenderFreePicture (ws->dpy, ws->matrix_mask);
+  if (ws->matrix_atlas) XFreePixmap (ws->dpy, ws->matrix_atlas);
+
   if (ws->heading_font)  XftFontClose (ws->dpy, ws->heading_font);
   if (ws->body_font)     XftFontClose (ws->dpy, ws->body_font);
   if (ws->label_font)    XftFontClose (ws->dpy, ws->label_font);
@@ -2033,6 +2087,7 @@ destroy_window (window_state *ws)
       ws->logo_npixels = 0;
     }
 
+  if (ws->argb_p) XFreeColormap (ws->dpy, ws->dialog_cmap);
   XSync (ws->dpy, False);
   memset (ws, 0, sizeof(*ws));
   free (ws);
@@ -2312,6 +2367,8 @@ handle_keypress (window_state *ws, XKeyEvent *event, Bool filter_p)
         out += strlen(out);
       }
   }
+  if (ws->phosphor_p) matrix_sync_count (ws);
+
 }
 
 
@@ -2505,7 +2562,10 @@ gui_main_loop (window_state *ws, Bool splash_p, Bool notification_p)
         {
           if (m)
             /* Process timers only, don't block */
-            XtAppProcessEvent (ws->app, m);
+            {
+              XtAppProcessEvent (ws->app, m);
+              if (ws->phosphor_p) refresh_p = True;
+            }
           else
             {
               if (refresh_p)
